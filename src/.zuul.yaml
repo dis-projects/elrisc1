@@ -1,0 +1,6 @@
+- project:
+    check:
+      jobs:
+        - solaris-buildroot-build:
+            irrelevant-files: &risc1-irrelevant-files
+              - .*\.rst
