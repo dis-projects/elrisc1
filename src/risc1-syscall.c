@@ -90,6 +90,8 @@ static const char *get_syscallname_by_id(int syscall_idx)
 		return "SC_LINK";
 	case SC_UNLINK:
 		return "SC_UNLINK";
+	case SC_EXIT:
+		return "SC_EXIT";
 	case SC_GET_ENV:
 		return "SC_GET_ENV";
 	}
@@ -330,6 +332,9 @@ int syscall_handler(struct risc1_job_inst_desc *job_inst, uint32_t command, int 
 		needFlush = 1;
 		self_processed = 0;
 		break;
+	case SC_EXIT:
+		self_processed = 0;
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -444,10 +449,19 @@ int event_vcpu_handler(struct risc1_job_inst_desc *job_inst)
 					 epc, command, status, cause);
 		}
 
-		if (((cause >> 2) & 0x1f) != 8) /* Syscall ? */
-			return 1;
-
-		return syscall_handler(job_inst, command, 1);
+		/* Try to process the following situations:
+		   - syscall instruction
+		   - sdbbp   0x1 (0x7000007f) instruction as exit
+		*/
+		switch(((cause >> 2) & 0x1f)) {
+		case 8: /* syscall */
+			return syscall_handler(job_inst, command, 1);
+		case 10: /* reserved instruction */
+			if (command == 0x7000007f) /* Simulate exit */
+				return syscall_handler(job_inst, (SC_EXIT << 6) + 0x0c, 1);
+			break;
+		}
+		return 1;
 	}
 
 	arg0 = risc1_read_reg(core, RISC1_ONCD_GRFCPU, 4);

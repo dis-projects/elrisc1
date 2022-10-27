@@ -24,6 +24,7 @@
 #define SC_TIMES	11
 #define SC_LINK		12
 #define SC_UNLINK	13
+#define SC_EXIT		99
 #define SC_GET_ENV	100
 
 #define EVENT_VCPU_BASE	200
