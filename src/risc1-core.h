@@ -188,8 +188,6 @@ void risc1_core_abort(struct risc1_priv *core);
 void print_dump(struct risc1_priv *core, int flags);
 void risc1_core_reset(struct risc1_priv *core);
 int risc1_core_stopped(struct risc1_priv *core);
-#ifndef RISC1_NO_IRQS
 irqreturn_t risc1_irq(int irq, void *priv);
-#endif
 
 #endif

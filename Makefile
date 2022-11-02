@@ -26,10 +26,6 @@ define KernelPackage/elvees-risc1/config
 	source "$(SOURCE)/Config.in"
 endef
 
-PKG_EXTRA_KCONFIG:= \
-	CONFIG_RISC1_VP=$(if $(CONFIG_RISC1_VP),y,n) \
-	CONFIG_RISC1_NO_IRQS=$(if $(CONFIG_RISC1_NO_IRQS),y,n) \
-
 PKG_EXTRA_CFLAGS:= \
 	$(patsubst CONFIG_%, -D%=1, $(patsubst %=m,%,$(filter %=m,$(PKG_EXTRA_KCONFIG)))) \
 	$(patsubst CONFIG_%, -D%=1, $(patsubst %=y,%,$(filter %=y,$(PKG_EXTRA_KCONFIG)))) \
@@ -49,5 +45,4 @@ define KernelPackage/elvees-risc1/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/risc1.h $(1)/usr/include/linux/
 endef
 
-#$(eval $(call KernelPackage,elvees-risc1,+elcore50-mmualloc))
 $(eval $(call KernelPackage,elvees-risc1))

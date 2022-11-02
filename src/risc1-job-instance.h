@@ -16,13 +16,6 @@ extern const struct file_operations risc1_mapper_ops;
 extern const struct file_operations risc1_job_fops;
 extern const struct dma_buf_ops risc1_dmabuf_ops;
 
-enum risc1_l2_size {
-	L2_CACHE_NONE = 0,
-	L2_CACHE_128 = 1,
-	L2_CACHE_256 = 2,
-	L2_CACHE_512 = 3
-};
-
 enum risc1_debug_state {
 	RISC1_DBG_RUN,
 	RISC1_DBG_INTERRUPTED,
@@ -59,13 +52,10 @@ struct risc1_job_inst_desc {
 	wait_queue_head_t syscall_waitq;
 	wait_queue_head_t debug_waitq;
 	struct work_struct worker;
-	enum risc1_l2_size l2_size;
 	uint32_t nc_mem_current;
 	struct mmu_pool *risc1_pool;
 	struct mmu_pool *dma_pool;
-#ifndef RISC1_NO_IRQS
 	int core_stopped;
-#endif
 	uint32_t catch_mode;
 	int abort;
 	int pc_wr;

@@ -248,7 +248,6 @@ void risc1_core_reset(struct risc1_priv *core)
 	mutex_unlock(&core->reg_lock);
 }
 
-#ifndef RISC1_NO_IRQS
 static void risc1_iommu_irq(struct risc1_priv *core, int i)
 {
 	uint32_t reg_tmp;
@@ -320,4 +319,4 @@ irqreturn_t risc1_irq(int irq, void *priv)
 finish:
 	return IRQ_HANDLED;
 }
-#endif
+

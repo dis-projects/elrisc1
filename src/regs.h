@@ -116,14 +116,6 @@
 #define DQSTR_SC	BIT(2)
 #define DQSTR_DBG	BIT(3)
 #define DQSTR_ERRS	(GENMASK(5, 0) | GENMASK(19, 7))
-#define DBG_ID		GENMASK(3, 0)
-#define DBG_ID_DBSAR0	4
-#define DBG_ID_DBSAR1	5
-#define DBG_ID_DBSAR2	6
-#define DBG_ID_DBSAR3	7
-#define DBG_ID_DBCNTR	8
-#define DBG_ID_DBBREAK	9
-#define DBG_ID_QLIC		15
 
 #define CTRL_PF		BIT(15)
 #define CTRL_PFN(x)	((x) << 16)
@@ -131,17 +123,6 @@
 #define CTRL_DOPFN(x)	((x) << 19)
 #define CTRL_PFB(x)	((x) << 21)
 #define CTRL_PipelineFlush	BIT(30)
-
-#if 0
-#define DSP_INVCTRL	0x804
-
-#define DSP_INVCTRL_FLUSH_ALL	0xffff
-
-#define DSP_MBARREG	0x82C
-
-#define DSP_CREGIONS	0x810
-#define DSP_MREGIONS	0x814
-#endif
 
 #define VMMU_PAGE_MAX_LEVEL	3
 
@@ -169,23 +150,6 @@
 
 #define VMMU_TLB_CTRL_DUMMY	(BIT(5) | BIT(6))
 #define DQSTR_TLB_ERRS		GENMASK(19, 16)
-
-#define L1DC_CTRL		0x34400
-
-#define L1_CTRL_PFB_4K		1
-
-#define L1IC_CTRL		0x2A400
-
-#if 0
-#define INTERNAL_DSP_INTERLEAVE	BIT(19)
-#ifdef ELCORE50_MCOM03
-#define PHYS_INTERNAL_DSP		0x2E00000
-#else
-#define PHYS_INTERNAL_DSP		0x10000000
-#endif
-#define PHYS_INTERNAL_INTERLEAVE_DSP	(PHYS_INTERNAL_DSP | \
-						INTERNAL_DSP_INTERLEAVE)
-#endif
 
 #define PHYS_INTERNAL_RISC1	0x10000000
 #define PHYS_EXTERNAL_RISC1	0x03b00000

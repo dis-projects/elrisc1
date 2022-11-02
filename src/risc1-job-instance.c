@@ -24,7 +24,6 @@ extern u32 risc1_syscall_debug;
 extern u32 exception_debug;
 extern u32 job_debug;
 
-#define E50_CACHE_L1	BIT(0)
 #define E50_CACHE_L2	BIT(1)
 
 static int risc1_parse_args(struct risc1_job_inst_desc *desc,
@@ -319,7 +318,6 @@ static int arrange_local_args(struct risc1_job_inst_desc *desc,
 			break;
 		if (ret) {
 			localmem_required += SZ_128K;
-			desc->l2_size--;
 		}
 	} while (ret);
 
@@ -511,16 +509,12 @@ int risc1_enqueue_job_inst(struct risc1_priv *core, void __user *arg)
 
 	/* TODO: users should be able to specify stack size */
 	if (local_mem == 0) {
-		desc->l2_size = L2_CACHE_512;
 		localmem_required = 0;
 	} else if (local_mem <= SZ_512K - SZ_256K) {
-		desc->l2_size = L2_CACHE_256;
 		localmem_required = SZ_256K;
 	} else if (local_mem <= SZ_512K - SZ_128K) {
-		desc->l2_size = L2_CACHE_128;
 		localmem_required = SZ_512K - SZ_128K;
 	} else if (local_mem <= SZ_512K) {
-		desc->l2_size = L2_CACHE_NONE;
 		localmem_required = SZ_512K;
 	} else {
 		dev_err(core->dev, "Not enough local memory for this job\n");
@@ -677,9 +671,7 @@ int risc1_cancel_job_inst(struct risc1_job_inst_desc *desc)
 		dev_warn(desc->core->dev, "risc1_cancel_job_inst\n");
 
 	desc->abort = 1;
-#ifndef RISC1_NO_IRQS
 	wake_up(&desc->irq_waitq);
-#endif
 	wake_up(&desc->syscall_waitq);
 	if (cancel_work_sync(&desc->worker)) {
 		spin_lock_irqsave(&desc->core->queue_lock, flags);
@@ -702,29 +694,12 @@ static void get_job_inst_results(struct risc1_job_inst_desc *desc)
 		dev_warn(desc->core->dev, "get_job_inst_results\n");
 
 	spin_lock_irqsave(&desc->state_lock, flags);
-#if 1 /* TODO: fix it */
+
 	desc->error = RISC1_JOB_STATUS_SUCCESS;
-#else
-	if (irq_status & DQSTR_ERRS) {
-		desc->error = RISC1_JOB_STATUS_ERROR;
-		dev_warn(core->dev, "Job failed with DQSTR: %x", irq_status);
-		print_dump(core, RISC1_DUMP_MAIN);
-	} else if ((irq_status & DQSTR_STP) == DQSTR_STP)
-		desc->error = RISC1_JOB_STATUS_SUCCESS;
-	else {
-		print_dump(core, RISC1_DUMP_MAIN);
-		WARN_ON(1);
-	}
-#endif
+
 	spin_unlock_irqrestore(&desc->state_lock, flags);
 	if (job_debug)
 		print_dump(core, RISC1_DUMP_MAIN);
-}
-
-static unsigned int get_cache_prefetch_boundary(void)
-{
-	/* TODO: Fix for different pages */
-	return L1_CTRL_PFB_4K;
 }
 
 static void caches_setup(struct risc1_job_inst_desc *desc)
@@ -748,26 +723,6 @@ static void caches_flush_after_run(struct risc1_job_inst_desc *desc)
 	if(job_debug)
 		dev_warn(desc->core->dev, "caches_flush_after_run\n");
 
-#if 0 // TODO: fix it
-	uint32_t i, reg_tmp;
-	struct risc1_priv *core = desc->core;
-
-	/* Stop prefetchers */
-	reg_tmp = risc1_read(core, DSP_CTRL);
-	reg_tmp &= ~(CTRL_PF | CTRL_DOPF);
-	risc1_write(reg_tmp, core, DSP_CTRL);
-
-	risc1_write(DSP_INVCTRL_FLUSH_ALL, core, DSP_INVCTRL);
-	while (risc1_read(core, DSP_MBARREG) != 0) {
-		for (i = 0; i < VMMU_TLBS; ++i) {
-			reg_tmp = risc1_read(core, VMMU_TLB_CTRL +
-							i * sizeof(u32));
-			reg_tmp |= VMMU_TLB_CTRL_DUMMY;
-			risc1_write(reg_tmp, core, VMMU_TLB_CTRL +
-						i * sizeof(u32));
-		}
-	}
-#endif
 }
 
 static void risc1_write_regs(struct risc1_job_inst_desc *desc)
@@ -845,17 +800,14 @@ static void risc1_write_regs(struct risc1_job_inst_desc *desc)
 
 	risc1_write((u32)(job_desc->pt4_dma_addr >> 32), core,
 		       VMMU_PTW_PBA_H);
-// VP behaves differently, rf#12206
-#ifdef RISC1_VP
-	risc1_write(VMMU_PTW_CFG_41B, core, VMMU_PTW_CFG);
-#else
+
 	if (risc1_write_regs_debug)
 		dev_warn(core->dev, "risc1_write_regs 8\n");
 
 	risc1_write(VMMU_PTW_CFG_41B | VMMU_PTW_CFG_INV |
 		       VMMU_PTW_CFG_A_CACHE(0xf) | VMMU_PTW_CFG_A_PROT(2) |
 		       VMMU_PTW_CFG_PREFETCH, core, VMMU_PTW_CFG);
-#endif
+
 	if (risc1_write_regs_debug)
 		dev_warn(core->dev, "risc1_write_regs 9\n");
 
@@ -864,12 +816,7 @@ static void risc1_write_regs(struct risc1_job_inst_desc *desc)
 
 	if (risc1_write_regs_debug)
 		dev_warn(core->dev, "risc1_write_regs 10\n");
-#if 0
-	risc1_write(0xFFFFFFFF, core, DSP_MREGIONS);
-	risc1_write(0xFFFFFFFF & ~desc->noncached_regions, core,
-		       DSP_CREGIONS);
-	risc1_write(0, core, DSP_IMASKR);
-#endif
+
 	value = ioread32(core->regs + (RISC1_OnCD + RISC1_ONCD_OSCR - RISC1_BASE));
 
 	if (risc1_write_regs_debug)
@@ -921,7 +868,6 @@ static void risc1_core_run(struct risc1_job_inst_desc *desc)
 	mutex_unlock(&core->reg_lock);
 }
 
-#ifndef RISC1_NO_IRQS
 static int risc1_exception(struct risc1_job_inst_desc *desc, int ended)
 {
 	struct risc1_priv *core = desc->core;
@@ -1126,61 +1072,8 @@ static int event_handler(struct risc1_job_inst_desc *desc, int ended)
 	}
 	mutex_unlock(&core->reg_lock);
 
-#if 0 // TODO: fix it
-	reg_tmp = risc1_read(core, DSP_DQSTR);
-	if ((desc->debug_state != RISC1_DBG_INTERRUPTED) &&
-	     desc->core_stopped && ((reg_tmp & (DQSTR_SC|DQSTR_DBG)) == 0)) {
-		ended = 1;
-		desc->stop_reason = RISC1_STOP_REASON_APP_EXCEPTION;
-	}
-	// In case of wrong syscall number DSP will be stopped
-	if (!ended && (reg_tmp & DQSTR_SC) != 0 && syscall_handler(desc)) {
-		ended = 1;
-		desc->stop_reason = RISC1_STOP_REASON_APP_EXCEPTION;
-	}
-#endif
 	reg_tmp = 0;
-#if 0
-	if (reg_tmp & DQSTR_DBG) {
-		if (desc->attached) {
-			desc->debug_state = RISC1_DBG_INTERRUPTED;
-			debug_stopped = 1;
-			// TODO: fix it
-			// debug_id = risc1_read(core, DBG_INDEX) & DBG_ID;
-			switch (debug_id) {
-			case DBG_ID_DBSAR0:
-			case DBG_ID_DBSAR1:
-			case DBG_ID_DBSAR2:
-			case DBG_ID_DBSAR3:
-				desc->stop_reason =
-					RISC1_STOP_REASON_HW_BREAKPOINT;
-				break;
-			case DBG_ID_DBCNTR:
-				desc->stop_reason = RISC1_STOP_REASON_STEP;
-				break;
-			case DBG_ID_DBBREAK:
-				desc->stop_reason =
-					RISC1_STOP_REASON_SW_BREAKPOINT;
-				break;
-			case DBG_ID_QLIC:
-				desc->stop_reason =
-					RISC1_STOP_REASON_EXTERNAL_REQUEST;
-				break;
-			}
-#if 0 // TODO: fix it
-			risc1_write(
-				risc1_read(core, DSP_IRQR) & (~IRQR_DBG),
-				core, DSP_IRQR);
-			risc1_write(
-				risc1_read(core, DSP_DQSTR) & (~DQSTR_DBG),
-				core, DSP_DQSTR);
-#endif
-		} else {
-			ended = 1;
-			desc->stop_reason = RISC1_STOP_REASON_APP_EXCEPTION;
-		}
-	}
-#endif
+
 #if 0 // TODO: fix it
 	if (debug_stopped && desc->step_breakpoint &&
 			(risc1_read(core, DSP_DBCNTR) != 0)) {
@@ -1247,19 +1140,12 @@ static int event_handler(struct risc1_job_inst_desc *desc, int ended)
 	}
 	return ended;
 }
-#else
-//TODO: Implement for noninterrupt mode
-#endif
 
 void risc1_job_inst_run(struct work_struct *worker)
 {
 	unsigned long flags_state, flags_queue;
 	int i, ret;
 	int ended = 0;
-#ifdef RISC1_NO_IRQS
-	uint32_t irq_status;
-	uint32_t reg_tmp;
-#endif
 	off_t offset;
 	struct risc1_job_inst_desc *desc = container_of(worker,
 					struct risc1_job_inst_desc,
@@ -1314,7 +1200,6 @@ void risc1_job_inst_run(struct work_struct *worker)
 	}
 	spin_unlock_irqrestore(&desc->state_lock, flags_state);
 
-#ifndef RISC1_NO_IRQS
 	while (1) {
 		ended = event_handler(desc, ended);
 		if (ended) {
@@ -1325,8 +1210,7 @@ void risc1_job_inst_run(struct work_struct *worker)
 			desc->stop_reason = RISC1_STOP_REASON_APP_EXCEPTION;
 		}
 	}
-#else
-#endif
+
 	desc->debug_result = -EINVAL;
 	desc->debug_state = RISC1_DBG_EXITED;
 	wake_up(&desc->debug_waitq);

@@ -4,4 +4,4 @@ risc1-objs := risc1-base.o risc1-core.o risc1-dmabuf.o \
                  risc1-job.o risc1-job-instance.o risc1-mmu.o \
                  risc1-mapper.o risc1-syscall.o risc1-reset.o \
                  risc1-debug.o risc1-trace.o mmu-alloc.o
-#risc1-mmualloc-objs := mmu-alloc.o
+

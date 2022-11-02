@@ -1,17 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
 
-config ELRISC1_VP
-	bool "ELRISC1_VP"
-	depends on PACKAGE_kmod-elvees-risc1
-	help
-	  Define symbol 'ELRISC1_VP' in elcore50 driver
-
-config ELRISC1_NO_IRQS
-	bool "ELRISC1_NO_IRQS"
-	depends on PACKAGE_kmod-elvees-risc1
-	help
-	  Define symbol 'ELRISC1_NO_IRQS' in elcore50 driver
-
 config VELRISC1_DRIVER_TRACE
 	bool "Build driver for tracing"
 	depends on PACKAGE_kmod-elvees-risc1

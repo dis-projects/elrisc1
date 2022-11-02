@@ -276,7 +276,6 @@ err_dev:
 	return ret;
 }
 
-#ifndef RISC1_NO_IRQS
 static void risc1_free_irqs(struct risc1_priv *drv_priv)
 {
 	int irq;
@@ -292,17 +291,11 @@ static void risc1_free_irqs(struct risc1_priv *drv_priv)
 
 	devm_kfree(drv_priv->dev, drv_priv->irqs);
 }
-#endif
 
 static void risc1_cores_destroy(struct risc1_priv *drv_priv)
 {
-
-#ifndef RISC1_NO_IRQS
 	risc1_free_irqs(drv_priv);
-#endif
-	//for (i = 0; i < drv_priv->ncores; i++)
-	//	risc1_core_destroy(&drv_priv->cores[i], drv_priv);
-	//unregister_chrdev_region(drv_priv->dev_num, drv_priv->ncores);
+	unregister_chrdev_region(drv_priv->dev_num, 1);
 }
 
 static int risc1_clock_init(struct risc1_priv *drv_priv)
@@ -462,7 +455,7 @@ static int risc1_probe(struct platform_device *pdev)
 		return ret;
 
 	dev_info(drv_priv->dev, "risc1_probe before irq initialization\n");
-#ifndef RISC1_NO_IRQS
+
 	drv_priv->nirqs = platform_irq_count(pdev);
 	drv_priv->irqs = devm_kcalloc(&pdev->dev, drv_priv->nirqs,
 				      sizeof(unsigned int),
@@ -493,8 +486,6 @@ static int risc1_probe(struct platform_device *pdev)
 		}
 		dev_info(drv_priv->dev, "risc1 irq %d\n", drv_priv->irqs[i]);
 	}
-
-#endif
 	dev_info(drv_priv->dev, "risc1_probe before platform_set_drvdata\n");
 	platform_set_drvdata(pdev, drv_priv);
 
@@ -610,53 +601,10 @@ static int risc1_probe(struct platform_device *pdev)
 	value = ioread32(drv_priv->regs + (RISC1_OnCD + RISC1_ONCD_OMDR - RISC1_BASE));
 	dev_warn(drv_priv->dev, "m %08x: %08x\n", 0x10000004, value);
 
-#if 0
-	for (i = 0x1fc00000; i <= 0x1fc00500; i += 4) {
-		count = 100;
-
-		iowrite32(i, drv_priv->regs + (RISC1_OnCD + RISC1_ONCD_OMAR - RISC1_BASE));
-		iowrite32(0xd, drv_priv->regs + (RISC1_OnCD + RISC1_ONCD_MEM - RISC1_BASE));
-
-		do {
-			value = ioread32(drv_priv->regs + (RISC1_OnCD + RISC1_ONCD_OSCR - RISC1_BASE));
-		} while(!(value & (1 << 5)) && count-- > 0);
-
-		value = ioread32(drv_priv->regs + (RISC1_OnCD + RISC1_ONCD_OMDR - RISC1_BASE));
-		dev_warn(drv_priv->dev, "m %08x: %08x\n", i, value);
-	}
-#endif
-
 	value = ioread32(drv_priv->regs + (RISC1_URB + SDR_RISC1_PSTATUS - RISC1_BASE));
 	dev_warn(drv_priv->dev, "RISC1 PSTATUS: %08x\n", value);
 
 	risc1_core_reset(drv_priv);
-
-#if 0
-	value = ioread32(drv_priv->surb_regs + SURB_SDR_DBGEN);
-	dev_warn(drv_priv->dev, "SURB_SDR_DBGEN: %08x\n", value);
-	if (!(value & 1)) {
-		iowrite32(value | 1, drv_priv->surb_regs + SURB_SDR_DBGEN);
-		value = ioread32(drv_priv->surb_regs + SURB_SDR_DBGEN);
-		dev_warn(drv_priv->dev, "SURB_SDR_DBGEN: %08x\n", value);
-	}
-
-	value = ioread32(drv_priv->surb_regs + SURB_UST_DBGEN);
-	dev_warn(drv_priv->dev, "SURB_UST_DBGEN: %08x\n", value);
-	if (!(value & 2)) {
-		iowrite32(value | 2, drv_priv->surb_regs + SURB_UST_DBGEN);
-		value = ioread32(drv_priv->surb_regs + SURB_UST_DBGEN);
-		dev_warn(drv_priv->dev, "SURB_UST_DBGEN: %08x\n", value);
-	}
-#endif
-
-#if 0
-	/* Skip CRAM zone in VMMU */
-	iowrite32(0x10000000 , drv_priv->regs + (RISC1_VMMU + 0x18 - RISC1_BASE));
-	iowrite32(0x00000000 , drv_priv->regs + (RISC1_VMMU + 0x1c - RISC1_BASE));
-	iowrite32(0x10007fff , drv_priv->regs + (RISC1_VMMU + 0x20 - RISC1_BASE));
-	iowrite32(0x00000000 , drv_priv->regs + (RISC1_VMMU + 0x24 - RISC1_BASE));
-	iowrite32(0x00000001 , drv_priv->regs + (RISC1_VMMU + 0x28 - RISC1_BASE));
-#endif
 
 #if 0
     /* Final reset initialization */
@@ -669,12 +617,11 @@ static int risc1_probe(struct platform_device *pdev)
 
 	print_dump(drv_priv, RISC1_DUMP_MAIN);
 	return 0;
-#ifndef RISC1_NO_IRQS
+
 err_irq:
 	risc1_free_irqs(drv_priv);
 err_device:
 	risc1_cores_destroy(drv_priv);
-#endif
 err_clock:
 	pm_runtime_disable(drv_priv->dev);
 	risc1_clock_destroy(drv_priv);
