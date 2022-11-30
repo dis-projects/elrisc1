@@ -26,6 +26,22 @@ define KernelPackage/elvees-risc1/config
 	source "$(SOURCE)/Config.in"
 endef
 
+define KernelPackage/elvees-risc1-rproc
+  SECTION:=kernel
+  CATEGORY:=Kernel modules
+  SUBMENU:=Other modules
+  DEPENDS:=@TARGET_elvees_mcom03 +@KERNEL_REMOTEPROC
+  #DEPENDS+=+kmod-elvees-elcore50
+  TITLE:=Elvees remoteproc RISC1 driver
+  AUTOLOAD:=$(call AutoProbe,risc1-rproc)
+  FILES:= \
+	$(PKG_BUILD_DIR)/risc1-rproc.ko
+endef
+
+define KernelPackage/elvees-rproc-risc1/description
+  RISC1 rproc implementations.
+endef
+
 PKG_EXTRA_CFLAGS:= \
 	$(patsubst CONFIG_%, -D%=1, $(patsubst %=m,%,$(filter %=m,$(PKG_EXTRA_KCONFIG)))) \
 	$(patsubst CONFIG_%, -D%=1, $(patsubst %=y,%,$(filter %=y,$(PKG_EXTRA_KCONFIG)))) \
@@ -46,3 +62,4 @@ define KernelPackage/elvees-risc1/install
 endef
 
 $(eval $(call KernelPackage,elvees-risc1))
+$(eval $(call KernelPackage,elvees-risc1-rproc))
