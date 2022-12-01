@@ -1260,17 +1260,19 @@
 			#interrupt-cells = <1>;
 			/* First interrupt must be IOMMU */
 			interrupts-extended = <&qlic1 2>, <&qlic0 6>;
-			/*resets = <&sdr_bbd_rst_ctl 0>,*/
 			resets = <&risc1_reset 0>;
 			clocks = <&sdr_ucg0 SDR_INT_CLK>,
 				 <&sdr_ucg0 SDR_VCU_ACLK>,
 				 <&sdr_ucg0 SDR_AUX_PCI_CLK>,
 				 <&sdr_ucg0 SDR_VCU_CLK>;
 			clock-names = "axi_clk", "vcu_aclk", "aux_clk", "vcu_tclk";
+			status = "disabled";
 		};
 
-		ris1rproc: ris1rproc@e0000000{
+		risc1rproc: risc1rproc@e0000000{
 			compatible = "elvees,risc1-rproc";
+			reg = <0 0x01900000 0 0x30000>, /* -UCG0, +URB, QDMA, ... */
+			      <0 0x03b00000 0 0x8000>;  /* CRAM */
 			memory-region   = <&risc1_reserved>;
 			resets = <&risc1_reset 0>;
 			clocks = <&sdr_ucg0 SDR_INT_CLK>,
@@ -1278,6 +1280,8 @@
 				 <&sdr_ucg0 SDR_AUX_PCI_CLK>,
 				 <&sdr_ucg0 SDR_VCU_CLK>;
 			clock-names = "axi_clk", "vcu_aclk", "aux_clk", "vcu_tclk";
+			firmware = "risc1_freertos.elf";
+			status = "ok";
 		};
 
 		
