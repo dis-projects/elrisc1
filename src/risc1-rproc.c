@@ -4,6 +4,8 @@
 #include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/of_clk.h>
+#include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/regmap.h>
 #include <linux/remoteproc.h>
@@ -26,11 +28,16 @@ typedef struct risc1_rproc_mem {
 
 struct risc1_rproc {
     struct workqueue_struct *workqueue;
+	struct device *dev;
+	int clock_count;
+	struct clk **clocks;
     struct risc1_rproc_mem mem[MAX_RPROC_MEM];
     bool secured_soc;
     bool early_boot;
     void __iomem *rsc_va;
 };
+
+static int reset_debug = 1;
 
 static inline u32 risc1_get_paddr(u32 addr)
 {
@@ -80,6 +87,8 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
 
 		ddata->mem[i].dev_addr = res->start;
 		ddata->mem[i].size = resource_size(res);
+        dev_info(dev, "ioremap 0x%x %ld 0x%016lx\n",
+            ddata->mem[i].dev_addr, ddata->mem[i].size, ddata->mem[i].cpu_addr);
 	}
 
 	/* memory-region */
@@ -102,6 +111,8 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
 
 	ddata->mem[2].dev_addr = r.start;
     ddata->mem[2].size = resource_size(&r);
+    dev_info(dev, "ioremap 0x%x %ld 0x%016lx\n",
+            ddata->mem[2].dev_addr, ddata->mem[2].size, ddata->mem[2].cpu_addr);
 
     return 0;
 }
@@ -152,13 +163,100 @@ static int risc1_rproc_parse_fw(struct rproc *rproc, const struct firmware *fw)
     return risc1_rproc_elf_load_rsc_table(rproc, fw);
 }
 
+static int elf_load_segments(struct rproc *rproc, const struct firmware *fw)
+{
+    struct device *dev = &rproc->dev;
+    struct elf32_hdr *ehdr;
+    struct elf32_phdr *phdr;
+    int i, ret = 0;
+    const u8 *elf_data = fw->data;
+
+    ehdr = (struct elf32_hdr *)elf_data;
+    phdr = (struct elf32_phdr *)(elf_data + ehdr->e_phoff);
+
+    /* go through the available ELF segments */
+    for (i = 0; i < ehdr->e_phnum; i++, phdr++)
+    {
+        u32 da = phdr->p_paddr;
+        u32 memsz = phdr->p_memsz;
+        u32 filesz = phdr->p_filesz;
+        u32 offset = phdr->p_offset;
+        void *ptr;
+
+        if (phdr->p_type != PT_LOAD)
+            continue;
+
+        dev_info(dev, "phdr: type %d da 0x%x memsz 0x%x filesz 0x%x\n",
+                phdr->p_type, da, memsz, filesz);
+
+        if (filesz > memsz)
+        {
+            dev_err(dev, "bad phdr filesz 0x%x memsz 0x%x\n",
+                    filesz, memsz);
+            ret = -EINVAL;
+            break;
+        }
+
+        if (offset + filesz > fw->size)
+        {
+            dev_err(dev, "truncated fw: need 0x%x avail 0x%zx\n",
+                    offset + filesz, fw->size);
+            ret = -EINVAL;
+            break;
+        }
+
+        /* grab the kernel address for this device address */
+        ptr = rproc_da_to_va(rproc, da, memsz);
+        if (!ptr)
+        {
+            dev_err(dev, "bad phdr da 0x%x mem 0x%x\n", da, memsz);
+            ret = -EINVAL;
+            break;
+        }
+
+        /* put the segment where the remote processor expects it */
+        if (phdr->p_filesz)
+        {
+            // memcpy(ptr, elf_data + phdr->p_offset, filesz);
+            u32 *pptr = (u32 *)ptr;
+            u32 *src = (u32 *)(elf_data + phdr->p_offset);
+            u32 size = filesz / 4;
+            int i;
+            for (i = 0; i < size; i++)
+                *pptr++ = *src++;
+        }
+#if 0 /* risc1 will zero bss */
+        /*
+         * Zero out remaining memory for this segment.
+         *
+         * This isn't strictly required since dma_alloc_coherent already
+         * did this for us. albeit harmless, we may consider removing
+         * this.
+         */
+        if (memsz > filesz)
+        {
+            // memset(ptr + filesz, 0, memsz - filesz);
+            u32 *pptr = (u32 *)(ptr + filesz);
+            u32 size = (memsz - filesz) / 4;
+            int i;
+            dev_info(dev, "zero out %d 0x%016lx %d %d\n",
+                     size, pptr, memsz, filesz);
+            for (i = 0; i < size; i++)
+                *pptr++ = 0;
+        }
+#endif
+    }
+
+    return ret;
+}
+
 static int risc1_rproc_elf_load_segments(struct rproc *rproc,
                                          const struct firmware *fw)
 {
     struct risc1_rproc *ddata = rproc->priv;
 
     if (!ddata->early_boot)
-        return rproc_elf_load_segments(rproc, fw);
+        return elf_load_segments(rproc, fw);
 
     return 0;
 }
@@ -237,13 +335,14 @@ static void *risc1_rproc_da_to_va(struct rproc *rproc, u64 da, int len)
 
 	/* Check regions */
 	for (i = 0; i < MAX_RPROC_MEM; i++) {
-		printk(KERN_INFO "risc1_rproc_da_to_va %d 0x%x %d\n",
-			i, ddata->mem[i].dev_addr, ddata->mem[i].size);
+		printk(KERN_INFO "risc1_rproc_da_to_va %d 0x%x %ld 0x%016lx\n",
+			i, ddata->mem[i].dev_addr, ddata->mem[i].size, ddata->mem[i].cpu_addr);
 
-		if (ma >= ddata->mem[i].dev_addr
-			&& ma + len < ddata->mem[i].dev_addr + ddata->mem[i].size) {
+		if ((ma >= ddata->mem[i].dev_addr)
+			&& (ma + len <= ddata->mem[i].dev_addr + ddata->mem[i].size)) {
 				unsigned int offset = ma - ddata->mem[i].dev_addr;
 				va = (__force void *)(ddata->mem[i].cpu_addr + offset);
+                printk(KERN_INFO "risc1_rproc_da_to_va va 0x%016lx offset 0x%x\n", va, offset);
 				break;
 		}
 	}
@@ -268,6 +367,87 @@ static const struct of_device_id risc1_rproc_match[] = {
     {},
 };
 MODULE_DEVICE_TABLE(of, risc1_rproc_match);
+
+static int risc1_clock_init(struct risc1_rproc *drv_priv)
+{
+	struct device_node *np = drv_priv->dev->of_node;
+	int i, ret;
+
+	drv_priv->clock_count = of_clk_get_parent_count(np);
+	if (!drv_priv->clock_count)
+		return 0;
+
+	drv_priv->clocks = devm_kcalloc(drv_priv->dev, drv_priv->clock_count,
+					sizeof(struct clk *), GFP_KERNEL);
+	if (!drv_priv->clocks)
+		return -ENOMEM;
+
+	for (i = 0; i < drv_priv->clock_count; ++i) {
+		drv_priv->clocks[i] = of_clk_get(np, i);
+		if (drv_priv->clocks[i]) {
+			ret = clk_prepare_enable(drv_priv->clocks[i]);
+			if (ret) {
+				dev_err(drv_priv->dev, "clock %d error: %ld\n",
+					i, PTR_ERR(drv_priv->clocks[i]));
+				clk_put(drv_priv->clocks[i]);
+				drv_priv->clocks[i] = NULL;
+				return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
+void risc1_reset(struct risc1_rproc *ddata)
+{
+	uint32_t value;
+    void __iomem *regs = ddata->mem[0].cpu_addr;
+
+	value = ioread32(regs + (RISC1_URB + SDR_RISC1_PSTATUS - RISC1_BASE));
+
+	/* Warm reset */
+	if (value != RISC1_PPOLICY_PP_WARM_RST) {
+		int count = 100;
+		iowrite32(RISC1_PPOLICY_PP_WARM_RST, regs + (RISC1_URB + SDR_RISC1_PPOLICY - RISC1_BASE));
+		do {
+			value = ioread32(regs + (RISC1_URB + SDR_RISC1_PSTATUS - RISC1_BASE));
+			if (reset_debug)
+				dev_warn(ddata->dev, "RISC1 PSTATUS: %08x\n", value);
+		} while(value != RISC1_PPOLICY_PP_WARM_RST && count-- > 0);
+	}
+
+	value = ioread32(regs + (RISC1_URB + SDR_RISC1_PSTATUS - RISC1_BASE));
+	if (reset_debug)
+		dev_warn(ddata->dev, "RISC1 PSTATUS: %08x\n", value);
+
+	/* PPON */
+	if (value != RISC1_PPOLICY_PP_ON) {
+		int count = 100;
+		iowrite32(RISC1_PPOLICY_PP_ON, regs + (RISC1_URB + SDR_RISC1_PPOLICY - RISC1_BASE));
+		do {
+			value = ioread32(regs + (RISC1_URB + SDR_RISC1_PSTATUS - RISC1_BASE));
+			if (reset_debug)
+				dev_warn(ddata->dev, "RISC1 PSTATUS: %08x\n", value);
+		} while(value != RISC1_PPOLICY_PP_ON && count-- > 0);
+	}
+
+#if 0
+	mutex_lock(&core->reg_lock);
+	iowrite32(1, core->regs + (RISC1_OnCD + RISC1_ONCD_PCR - RISC1_BASE));
+	value = ioread32(core->regs + (RISC1_OnCD + RISC1_ONCD_PC - RISC1_BASE));
+	if (job_debug)
+		dev_warn(core->dev, "PC6    : %08x\n", value);
+
+	/* Final reset initialization */
+	value = ioread32(core->regs + (RISC1_CSR + 0 - RISC1_BASE));
+	iowrite32(value | (1 << 1) | (1 << 12)| (1 << 14), core->regs + (RISC1_CSR + 0 - RISC1_BASE));
+	iowrite32(0x7, (core->regs + (RISC1_URB + SDR_ACC_RST_CTL - RISC1_BASE)));
+	iowrite32(0x44 , core->regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
+	iowrite32(0x50 , core->regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
+	mutex_unlock(&core->reg_lock);
+#endif
+}
 
 static int risc1_rproc_probe(struct platform_device *pdev)
 {
@@ -302,7 +482,11 @@ static int risc1_rproc_probe(struct platform_device *pdev)
     if (ret)
         goto free_wkq;
 
+	ddata->dev = dev;
+	ret = risc1_clock_init(ddata);
+
     if (!ddata->early_boot) {
+        risc1_reset(ddata);
         ret = risc1_rproc_stop(rproc);
         if (ret)
             goto free_wkq;
