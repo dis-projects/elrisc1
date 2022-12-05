@@ -303,7 +303,12 @@ static u32 risc1_rproc_elf_get_boot_addr(struct rproc *rproc,
 
 static int risc1_rproc_start(struct rproc *rproc)
 {
+    struct risc1_rproc *ddata = rproc->priv;
+    void __iomem *regs = ddata->mem[0].cpu_addr;
+
     printk(KERN_INFO "risc1_rproc_start\n");
+
+    iowrite32(1, regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_SET - RISC1_BASE));
     return 0;
 }
 
