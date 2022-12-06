@@ -27,14 +27,17 @@ typedef struct risc1_rproc_mem {
 } risc1_rproc_mem;
 
 struct risc1_rproc {
-    struct workqueue_struct *workqueue;
-	struct device *dev;
-	int clock_count;
-	struct clk **clocks;
     struct risc1_rproc_mem mem[MAX_RPROC_MEM];
+    struct work_struct workqueue;
+	struct device *dev;
+    struct rproc *rproc;
+    void __iomem *rsc_va;
+	struct clk **clocks;
+    int clock_count;
+    u32 event;
+    int irq;
     bool secured_soc;
     bool early_boot;
-    void __iomem *rsc_va;
 };
 
 static int reset_debug = 1;
@@ -63,6 +66,16 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
     if (of_property_read_bool(np, "early-booted")) {
         ddata->early_boot = true;
     }
+
+    /* irq */
+    ddata->irq = platform_get_irq(pdev, 0);
+	if (ddata->irq < 0) {
+		dev_err(&pdev->dev, "Failed to get interrupt\n");
+		return ddata->irq;
+	}
+
+    ddata->event = 9;
+    of_property_read_u32(np, "event", &ddata->event);
 
     /* reg */
 	for (i = 0; i < 2; i++) {
@@ -125,8 +138,6 @@ static int risc1_rproc_elf_load_rsc_table(struct rproc *rproc,
     int status;
 
     printk(KERN_INFO "risc1_rproc_elf_load_rsc_table\n");
-
-
 
     if (!ddata->early_boot) {
         status = rproc_elf_load_rsc_table(rproc, fw);
@@ -301,25 +312,63 @@ static u32 risc1_rproc_elf_get_boot_addr(struct rproc *rproc,
     return 0;
 }
 
+static void handle_event(struct work_struct *work)
+{
+        struct risc1_rproc *ddata =
+                container_of(work, struct risc1_rproc, workqueue);
+
+        rproc_vq_interrupt(ddata->rproc, 0);
+        rproc_vq_interrupt(ddata->rproc, 1);
+}
+
+static irqreturn_t risc1_rproc_vring_interrupt(int irq, void *dev_id)
+{
+    struct risc1_rproc *ddata = dev_id;
+
+    schedule_work(&ddata->workqueue);
+
+    return IRQ_HANDLED;
+}
+
 static int risc1_rproc_start(struct rproc *rproc)
 {
     struct risc1_rproc *ddata = rproc->priv;
     void __iomem *regs = ddata->mem[0].cpu_addr;
+    int ret;
 
     printk(KERN_INFO "risc1_rproc_start\n");
 
+    INIT_WORK(&ddata->workqueue, handle_event);
+    ret = request_irq(ddata->irq, risc1_rproc_vring_interrupt, 0,
+                          dev_name(ddata->dev), rproc);
+    if (ret) {
+        dev_err(ddata->dev, "failed to enable vring interrupt, ret = %d\n",
+                ret);
+        goto out;
+    }
+
     iowrite32(1, regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_SET - RISC1_BASE));
     return 0;
+out:
+    return ret;
 }
 
 static int risc1_rproc_stop(struct rproc *rproc)
 {
+    struct risc1_rproc *ddata = rproc->priv;
+
     printk(KERN_INFO "risc1_rproc_stop\n");
+
+    free_irq(ddata->irq, ddata);
+    flush_work(&ddata->workqueue);
+
     return 0;
 }
 
 static void risc1_rproc_kick(struct rproc *rproc, int vqid)
 {
+    struct risc1_rproc *ddata = rproc->priv;
+
     printk(KERN_INFO "risc1_rproc_kick\n");
 }
 
@@ -437,21 +486,6 @@ void risc1_reset(struct risc1_rproc *ddata)
 		} while(value != RISC1_PPOLICY_PP_ON && count-- > 0);
 	}
 
-#if 0
-	mutex_lock(&core->reg_lock);
-	iowrite32(1, core->regs + (RISC1_OnCD + RISC1_ONCD_PCR - RISC1_BASE));
-	value = ioread32(core->regs + (RISC1_OnCD + RISC1_ONCD_PC - RISC1_BASE));
-	if (job_debug)
-		dev_warn(core->dev, "PC6    : %08x\n", value);
-
-	/* Final reset initialization */
-	value = ioread32(core->regs + (RISC1_CSR + 0 - RISC1_BASE));
-	iowrite32(value | (1 << 1) | (1 << 12)| (1 << 14), core->regs + (RISC1_CSR + 0 - RISC1_BASE));
-	iowrite32(0x7, (core->regs + (RISC1_URB + SDR_ACC_RST_CTL - RISC1_BASE)));
-	iowrite32(0x44 , core->regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
-	iowrite32(0x50 , core->regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
-	mutex_unlock(&core->reg_lock);
-#endif
 }
 
 static int risc1_rproc_probe(struct platform_device *pdev)
@@ -472,20 +506,16 @@ static int risc1_rproc_probe(struct platform_device *pdev)
     if (!rproc)
         return -ENOMEM;
 
+
     rproc->has_iommu = false; /* workaround */
     ddata = rproc->priv;
-    ddata->workqueue = create_workqueue(dev_name(dev));
-    if (!ddata->workqueue) {
-        dev_err(dev, "cannot create workqueue\n");
-        ret = -ENOMEM;
-        goto free_rproc;
-    }
+    ddata->rproc = rproc;
 
     platform_set_drvdata(pdev, rproc);
 
     ret = risc1_rproc_parse_dt(pdev);
     if (ret)
-        goto free_wkq;
+        goto free_rproc;
 
 	ddata->dev = dev;
 	ret = risc1_clock_init(ddata);
@@ -494,20 +524,18 @@ static int risc1_rproc_probe(struct platform_device *pdev)
         risc1_reset(ddata);
         ret = risc1_rproc_stop(rproc);
         if (ret)
-            goto free_wkq;
+            goto free_rproc;
     }
 
     if (ret)
-        goto free_wkq;
+        goto free_rproc;
 
     ret = rproc_add(rproc);
     if (ret)
-        goto free_wkq;
+        goto free_rproc;
 
     return 0;
 
-free_wkq:
-    destroy_workqueue(ddata->workqueue);
 free_rproc:
     if (device_may_wakeup(dev)) {
         device_init_wakeup(dev, false);

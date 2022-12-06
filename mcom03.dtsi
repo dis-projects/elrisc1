@@ -1274,6 +1274,9 @@
 			reg = <0 0x01900000 0 0x30000>, /* -UCG0, +URB, QDMA, ... */
 			      <0 0x03b00000 0 0x8000>;  /* CRAM */
 			memory-region   = <&risc1_reserved>;
+			interrupt-parent = <&qlic1>;
+			interrupts = <12>;
+			event = <9>;
 			resets = <&risc1_reset 0>;
 			clocks = <&sdr_ucg0 SDR_INT_CLK>,
 				 <&sdr_ucg0 SDR_VCU_ACLK>,
