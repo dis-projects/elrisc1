@@ -219,6 +219,7 @@ struct risc1_dbg_stop_reason {
 #define RISC1_DUMP_MAIN		0x01f
 #define RISC1_DUMP_MEM		0x100
 #define RISC1_DUMP_VMMU		0x200
+#define RISC1_DUMP_NMI		0x400
 
 #define RISC1_IOC_ENQUEUE_JOB \
 	_IOWR(RISC1_MAGIC, 1, struct risc1_job_instance *)

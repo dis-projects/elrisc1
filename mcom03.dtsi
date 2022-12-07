@@ -1272,7 +1272,8 @@
 		risc1rproc: risc1rproc@e0000000{
 			compatible = "elvees,risc1-rproc";
 			reg = <0 0x01900000 0 0x30000>, /* -UCG0, +URB, QDMA, ... */
-			      <0 0x03b00000 0 0x8000>;  /* CRAM */
+			      <0 0x03b00000 0 0x8000>, /* CRAM */
+				  <0 0x01e00000 0 0x9000>; /* MBOX */
 			memory-region   = <&risc1_reserved>;
 			interrupt-parent = <&qlic1>;
 			interrupts = <12>;

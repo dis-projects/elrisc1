@@ -1,3 +1,4 @@
+#include <linux/debugfs.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
@@ -15,6 +16,7 @@
 #include "../drivers/remoteproc/remoteproc_internal.h"
 
 #include "regs.h"
+#include "risc1.h"
 
 #define RSC_TBL_SIZE    (1024)
 #define MAX_RPROC_MEM   3
@@ -32,15 +34,27 @@ struct risc1_rproc {
 	struct device *dev;
     struct rproc *rproc;
     void __iomem *rsc_va;
+    void __iomem *mbox;
 	struct clk **clocks;
     int clock_count;
     u32 event;
     int irq;
     bool secured_soc;
     bool early_boot;
+    int started;
 };
 
-static int reset_debug = 1;
+static struct class *elrisc1_class;
+
+static struct dentry *pdentry;
+
+static struct idr risc1_idr;
+static spinlock_t risc1_idr_lock;
+
+static u32 stop_timeout_msec;
+static u32 reset_debug;
+
+static void risc1_reset(struct risc1_rproc *ddata);
 
 static inline u32 risc1_get_paddr(u32 addr)
 {
@@ -103,6 +117,22 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
         dev_info(dev, "ioremap 0x%x %ld 0x%016lx\n",
             ddata->mem[i].dev_addr, ddata->mem[i].size, ddata->mem[i].cpu_addr);
 	}
+
+    /* mbox reg */
+    res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+	if (!res) {
+		dev_err(&pdev->dev, "Failed to get registers 2\n");
+		return -ENOENT;
+	}
+
+    ddata->mbox = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(ddata->mbox)) {
+		dev_err(&pdev->dev, "Failed to map registers: %ld\n",
+		    PTR_ERR(ddata->mbox));
+		return PTR_ERR(ddata->mbox);
+	}
+    dev_info(dev, "ioremap 0x%x %ld 0x%016lx\n",
+        res->start, resource_size(res), ddata->mbox);
 
 	/* memory-region */
     node = of_parse_phandle(np, "memory-region", 0);
@@ -312,6 +342,92 @@ static u32 risc1_rproc_elf_get_boot_addr(struct rproc *rproc,
     return 0;
 }
 
+static inline u32 risc1_read_reg(struct risc1_rproc *ddata,
+	unsigned int const group, unsigned int const reg)
+{
+    void __iomem *regs = ddata->mem[0].cpu_addr;
+	u32 code = group;
+	u32 result;
+
+	/* Read reg by OnCD */
+	if (group < 2) {
+		code |= reg << 16;
+	} else {
+		code |= reg << 3;
+	}
+
+	iowrite32(code, regs + (RISC1_OnCD +  RISC1_ONCD_IRDEC - RISC1_BASE));
+	iowrite32(0, regs + (RISC1_OnCD +  RISC1_ONCD_REGFR - RISC1_BASE));
+	result = ioread32(regs + (RISC1_OnCD +  RISC1_ONCD_REGF - RISC1_BASE));
+
+	return result;
+}
+
+static void risc1_dump(struct risc1_rproc *ddata, int flags)
+{
+    void __iomem *regs = ddata->mem[0].cpu_addr;
+    uint32_t value;
+	int i;
+
+	if (flags & RISC1_DUMP_ONCD)
+	{
+		/* Dump RISC1 OnCD registers */
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
+		dev_warn(ddata->dev, "IR     : %08x\n", value);
+
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_IDCODE - RISC1_BASE));
+		dev_warn(ddata->dev, "IDCODE : %08x\n", value);
+
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_OSCR - RISC1_BASE));
+		dev_warn(ddata->dev, "OSCR   : %08x\n", value);
+
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_OBCR - RISC1_BASE));
+		dev_warn(ddata->dev, "OBCR   : %08x\n", value);
+
+		iowrite32(1, regs + (RISC1_OnCD + RISC1_ONCD_PCDEC - RISC1_BASE));
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_PCDEC - RISC1_BASE));
+		dev_warn(ddata->dev, "PCDEC  : %08x\n", value);
+
+		iowrite32(1, regs + (RISC1_OnCD + RISC1_ONCD_PCEXE - RISC1_BASE));
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_PCEXE - RISC1_BASE));
+		dev_warn(ddata->dev, "PCEXE  : %08x\n", value);
+
+		iowrite32(1, regs + (RISC1_OnCD + RISC1_ONCD_PCMEM - RISC1_BASE));
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_PCMEM - RISC1_BASE));
+		dev_warn(ddata->dev, "PCMEM  : %08x\n", value);
+
+		iowrite32(1, regs + (RISC1_OnCD + RISC1_ONCD_PCR - RISC1_BASE));
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_PC - RISC1_BASE));
+		dev_warn(ddata->dev, "PC     : %08x\n", value);
+
+		iowrite32(1, regs + (RISC1_OnCD + RISC1_ONCD_PCWB - RISC1_BASE));
+		value = ioread32(regs + (RISC1_OnCD + RISC1_ONCD_PCWB - RISC1_BASE));
+		dev_warn(ddata->dev, "PCWB   : %08x\n", value);
+
+		value = ioread32(regs + (RISC1_CSR + 0 - RISC1_BASE));
+		dev_warn(ddata->dev, "CSR    : %08x\n", value);
+
+		value = ioread32(regs + (RISC1_CSR + 4 - RISC1_BASE));
+		dev_warn(ddata->dev, "EVENT  : %08x\n", value);
+	}
+
+    if (flags & RISC1_DUMP_NMI) {
+        value = ioread32(regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_STATUS - RISC1_BASE));
+        dev_warn(ddata->dev, "SDR_RISC1_SOFT_NMI_STATUS  : %08x\n", value);
+        value = ioread32(regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_MASK - RISC1_BASE));
+        dev_warn(ddata->dev, "SDR_RISC1_SOFT_NMI_MASK    : %08x\n", value);
+    }
+
+    if (flags & RISC1_DUMP_CP0)
+	{
+		for (i = 0; i <= 31; i++)
+		{
+			value = risc1_read_reg(ddata, RISC1_ONCD_GCP0, i);
+			dev_warn(ddata->dev, "CP0.%02d : %08x\n", i, value);
+		}
+	}
+}
+
 static void handle_event(struct work_struct *work)
 {
         struct risc1_rproc *ddata =
@@ -325,6 +441,8 @@ static irqreturn_t risc1_rproc_vring_interrupt(int irq, void *dev_id)
 {
     struct risc1_rproc *ddata = dev_id;
 
+    /* Use CLR_IRQ_u to clear interrupt */
+    iowrite32(0xff, ddata->mbox + 0x1014); /* page 1942-1944 */
     schedule_work(&ddata->workqueue);
 
     return IRQ_HANDLED;
@@ -348,6 +466,8 @@ static int risc1_rproc_start(struct rproc *rproc)
     }
 
     iowrite32(1, regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_SET - RISC1_BASE));
+    ddata->started = 1;
+    //risc1_dump(ddata, RISC1_DUMP_ONCD | RISC1_DUMP_NMI);
     return 0;
 out:
     return ret;
@@ -356,11 +476,24 @@ out:
 static int risc1_rproc_stop(struct rproc *rproc)
 {
     struct risc1_rproc *ddata = rproc->priv;
+    void __iomem *regs = ddata->mem[0].cpu_addr;
 
     printk(KERN_INFO "risc1_rproc_stop\n");
 
-    free_irq(ddata->irq, ddata);
-    flush_work(&ddata->workqueue);
+    if (ddata->started) {
+        free_irq(ddata->irq, rproc);
+        flush_work(&ddata->workqueue);
+    }
+
+    /* Real stop */
+    iowrite32(0x04 , regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
+    iowrite32(1, regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_CLEAR - RISC1_BASE));
+    //risc1_dump(ddata, RISC1_DUMP_ONCD | RISC1_DUMP_NMI | RISC1_DUMP_CP0);
+    msleep(stop_timeout_msec);
+
+    risc1_reset(ddata);
+
+    ddata->started = 0;
 
     return 0;
 }
@@ -370,6 +503,8 @@ static void risc1_rproc_kick(struct rproc *rproc, int vqid)
     struct risc1_rproc *ddata = rproc->priv;
 
     printk(KERN_INFO "risc1_rproc_kick\n");
+    /* use SET_IRQ for risc1 from cpu 0 */
+    iowrite32(1 << 4, ddata->mbox + 0x1014); /* page 1942-1943 */
 }
 
 static void *risc1_rproc_da_to_va(struct rproc *rproc, u64 da, int len)
@@ -453,7 +588,7 @@ static int risc1_clock_init(struct risc1_rproc *drv_priv)
 	return 0;
 }
 
-void risc1_reset(struct risc1_rproc *ddata)
+static void risc1_reset(struct risc1_rproc *ddata)
 {
 	uint32_t value;
     void __iomem *regs = ddata->mem[0].cpu_addr;
@@ -573,7 +708,37 @@ static struct platform_driver risc1_rproc_driver = {
         .of_match_table = of_match_ptr(risc1_rproc_match),
     },
 };
-module_platform_driver(risc1_rproc_driver);
+//module_platform_driver(risc1_rproc_driver);
+
+static int __init risc1_init(void)
+{
+    struct dentry *stop_timeout_dentry, *reset_debug_dentry;
+
+    elrisc1_class = class_create(THIS_MODULE, "risc1-rproc");
+
+    pdentry = debugfs_create_dir("risc1-rproc", NULL);
+	if (!pdentry)
+		return -ENOMEM;
+
+    stop_timeout_dentry = debugfs_create_u32("stop-timeout-msec", 0600,
+						pdentry, &stop_timeout_msec);
+
+    reset_debug_dentry = debugfs_create_u32("reset_debug", 0600,
+						pdentry, &reset_debug);
+
+    return platform_driver_register(&risc1_rproc_driver);
+}
+
+static void __exit risc1_exit(void)
+{
+	platform_driver_unregister(&risc1_rproc_driver);
+	debugfs_remove_recursive(pdentry);
+	idr_destroy(&risc1_idr);
+	class_destroy(elrisc1_class);
+}
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("ELVEES RISC1 driver");
+
+module_init(risc1_init);
+module_exit(risc1_exit);
