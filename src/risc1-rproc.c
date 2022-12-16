@@ -55,6 +55,7 @@ static u32 stop_timeout_msec;
 static u32 reset_debug;
 
 static void risc1_reset(struct risc1_rproc *ddata);
+static void *risc1_rproc_da_to_va(struct rproc *rproc, u64 da, int len);
 
 static inline u32 risc1_get_paddr(u32 addr)
 {
@@ -266,26 +267,6 @@ static int elf_load_segments(struct rproc *rproc, const struct firmware *fw)
             for (i = 0; i < size; i++)
                 *pptr++ = *src++;
         }
-#if 0 /* risc1 will zero bss */
-        /*
-         * Zero out remaining memory for this segment.
-         *
-         * This isn't strictly required since dma_alloc_coherent already
-         * did this for us. albeit harmless, we may consider removing
-         * this.
-         */
-        if (memsz > filesz)
-        {
-            // memset(ptr + filesz, 0, memsz - filesz);
-            u32 *pptr = (u32 *)(ptr + filesz);
-            u32 size = (memsz - filesz) / 4;
-            int i;
-            dev_info(dev, "zero out %d 0x%016lx %d %d\n",
-                     size, pptr, memsz, filesz);
-            for (i = 0; i < size; i++)
-                *pptr++ = 0;
-        }
-#endif
     }
 
     return ret;
@@ -307,13 +288,17 @@ risc1_rproc_elf_find_loaded_rsc_table(struct rproc *rproc,
                                       const struct firmware *fw)
 {
     struct risc1_rproc *ddata = rproc->priv;
+    struct resource_table *rsc;
 
     printk(KERN_INFO "risc1_rproc_elf_find_loaded_rsc_table\n");
 
-    if (!ddata->early_boot)
-        return rproc_elf_find_loaded_rsc_table(rproc, fw);
+    if (!ddata->early_boot) {
+        rsc = rproc_elf_find_loaded_rsc_table(rproc, fw);
+    } else {
+        rsc = (struct resource_table *)ddata->rsc_va;
+    }
 
-    return (struct resource_table *)ddata->rsc_va;
+    return rsc;
 }
 
 static int risc1_rproc_elf_sanity_check(struct rproc *rproc,
@@ -439,10 +424,11 @@ static void handle_event(struct work_struct *work)
 
 static irqreturn_t risc1_rproc_vring_interrupt(int irq, void *dev_id)
 {
-    struct risc1_rproc *ddata = dev_id;
+    struct rproc *rproc = dev_id;
+    struct risc1_rproc *ddata = rproc->priv;
 
     /* Use CLR_IRQ_u to clear interrupt */
-    iowrite32(0xff, ddata->mbox + 0x1014); /* page 1942-1944 */
+    iowrite32(0xff, ddata->mbox + 0x401c); /* page 1942-1944 */
     schedule_work(&ddata->workqueue);
 
     return IRQ_HANDLED;
@@ -488,6 +474,7 @@ static int risc1_rproc_stop(struct rproc *rproc)
     /* Real stop */
     iowrite32(0x04 , regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
     iowrite32(1, regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_CLEAR - RISC1_BASE));
+    iowrite32(0xff, ddata->mem[2].cpu_addr + 0x101c);
     //risc1_dump(ddata, RISC1_DUMP_ONCD | RISC1_DUMP_NMI | RISC1_DUMP_CP0);
     msleep(stop_timeout_msec);
 
