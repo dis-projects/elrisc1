@@ -1285,6 +1285,7 @@
 				 <&sdr_ucg0 SDR_VCU_CLK>;
 			clock-names = "axi_clk", "vcu_aclk", "aux_clk", "vcu_tclk";
 			firmware = "risc1_freertos.elf";
+			fitimage = "elcore_fit_image";
 			status = "ok";
 		};
 

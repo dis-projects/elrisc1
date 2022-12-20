@@ -36,12 +36,14 @@ struct risc1_rproc {
 	struct device *dev;
     struct device *devc;
     struct rproc *rproc;
+    const char *fit_name;
     void __iomem *rsc_va;
     void __iomem *mbox;
 	struct clk **clocks;
     int clock_count;
     dev_t dev_num;
     u32 event;
+    u32 fitaddr;
     int irq;
     bool secured_soc;
     bool early_boot;
@@ -211,11 +213,14 @@ static int risc1_rproc_parse_fw(struct rproc *rproc, const struct firmware *fw)
 
 static int elf_load_segments(struct rproc *rproc, const struct firmware *fw)
 {
+    const struct firmware *firmware_p;
     struct device *dev = &rproc->dev;
     struct elf32_hdr *ehdr;
     struct elf32_phdr *phdr;
+    struct risc1_rproc *ddata = rproc->priv;
     int i, ret = 0;
     const u8 *elf_data = fw->data;
+    u32 fitaddr = 0;
 
     ehdr = (struct elf32_hdr *)elf_data;
     phdr = (struct elf32_phdr *)(elf_data + ehdr->e_phoff);
@@ -271,8 +276,51 @@ static int elf_load_segments(struct rproc *rproc, const struct firmware *fw)
             for (i = 0; i < size; i++)
                 *pptr++ = *src++;
         }
+
+        da += memsz;
+        if (da > fitaddr)
+            fitaddr = da;
     }
 
+    fitaddr = (fitaddr + 4096 - 1) & -4096; // alignment
+    ddata->fitaddr = fitaddr;
+    dev_info(dev, "fitaddr 0x%08x\n", fitaddr);
+
+    if (ret)
+        return ret;
+
+    /* Try to downalod FIT image */
+    if (ddata->fit_name == NULL)
+        return ret;
+
+    ret = request_firmware(&firmware_p, ddata->fit_name, dev);
+    if (ret < 0) {
+        dev_err(dev, "request_firmware failed: %d\n", ret);
+        return ret;
+    }
+
+    /* download FIT image */
+    {
+        void *ptr;
+        int i;
+        u32 *src = (u32 *)firmware_p->data;
+
+        ptr = rproc_da_to_va(rproc, fitaddr, firmware_p->size);
+        if (!ptr)
+        {
+            dev_err(dev, "bad fitaddr 0x%x size 0x%lx\n", fitaddr, firmware_p->size);
+            ret = -EINVAL;
+        } else {
+            u32 *pptr = (u32 *)ptr;
+            u32 size = firmware_p->size / 4;
+            for (i = 0; i < size; i++)
+                *pptr++ = *src++;
+
+            dev_info(dev, "fit image %s is loaded\n", ddata->fit_name);
+        }
+    }
+
+    release_firmware(firmware_p);
     return ret;
 }
 
@@ -522,7 +570,7 @@ static void *risc1_rproc_da_to_va(struct rproc *rproc, u64 da, int len)
 			&& (ma + len <= ddata->mem[i].dev_addr + ddata->mem[i].size)) {
 				unsigned int offset = ma - ddata->mem[i].dev_addr;
 				va = (__force void *)(ddata->mem[i].cpu_addr + offset);
-                printk(KERN_INFO "risc1_rproc_da_to_va va 0x%016p offset 0x%x\n", va, offset);
+                printk(KERN_INFO "risc1_rproc_da_to_va va 0x%p offset 0x%x\n", va, offset);
 				break;
 		}
 	}
@@ -653,6 +701,7 @@ static int risc1_rproc_probe(struct platform_device *pdev)
     struct device_node *np = dev->of_node;
     struct rproc *rproc;
     const char *fw_name = NULL;
+    const char *fit_name = NULL;
     int ret, major, minor;
 
     ret = of_property_read_string(dev->of_node, "firmware",
@@ -664,10 +713,14 @@ static int risc1_rproc_probe(struct platform_device *pdev)
     if (!rproc)
         return -ENOMEM;
 
-
     rproc->has_iommu = false; /* workaround */
     ddata = rproc->priv;
     ddata->rproc = rproc;
+
+    ret = of_property_read_string(dev->of_node, "fitimage",
+                                      &fit_name);
+    if (fit_name != NULL)
+        ddata->fit_name = kstrdup(fit_name, GFP_KERNEL);
 
     platform_set_drvdata(pdev, rproc);
 
