@@ -12,6 +12,7 @@
 #include <linux/remoteproc.h>
 #include <linux/reset.h>
 #include <linux/workqueue.h>
+#include <linux/cdev.h>
 
 #include "../drivers/remoteproc/remoteproc_internal.h"
 
@@ -31,12 +32,15 @@ typedef struct risc1_rproc_mem {
 struct risc1_rproc {
     struct risc1_rproc_mem mem[MAX_RPROC_MEM];
     struct work_struct workqueue;
+    struct cdev cdev;
 	struct device *dev;
+    struct device *devc;
     struct rproc *rproc;
     void __iomem *rsc_va;
     void __iomem *mbox;
 	struct clk **clocks;
     int clock_count;
+    dev_t dev_num;
     u32 event;
     int irq;
     bool secured_soc;
@@ -115,7 +119,7 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
 
 		ddata->mem[i].dev_addr = res->start;
 		ddata->mem[i].size = resource_size(res);
-        dev_info(dev, "ioremap 0x%x %ld 0x%016lx\n",
+        dev_info(dev, "ioremap 0x%x %ld 0x%p\n",
             ddata->mem[i].dev_addr, ddata->mem[i].size, ddata->mem[i].cpu_addr);
 	}
 
@@ -132,7 +136,7 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
 		    PTR_ERR(ddata->mbox));
 		return PTR_ERR(ddata->mbox);
 	}
-    dev_info(dev, "ioremap 0x%x %ld 0x%016lx\n",
+    dev_info(dev, "ioremap 0x%llx %lld 0x%p\n",
         res->start, resource_size(res), ddata->mbox);
 
 	/* memory-region */
@@ -155,7 +159,7 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
 
 	ddata->mem[2].dev_addr = r.start;
     ddata->mem[2].size = resource_size(&r);
-    dev_info(dev, "ioremap 0x%x %ld 0x%016lx\n",
+    dev_info(dev, "ioremap 0x%x %ld 0x%p\n",
             ddata->mem[2].dev_addr, ddata->mem[2].size, ddata->mem[2].cpu_addr);
 
     return 0;
@@ -489,7 +493,7 @@ static void risc1_rproc_kick(struct rproc *rproc, int vqid)
 {
     struct risc1_rproc *ddata = rproc->priv;
 
-    printk(KERN_INFO "risc1_rproc_kick\n");
+    //printk(KERN_INFO "risc1_rproc_kick\n");
     /* use SET_IRQ for risc1 from cpu 0 */
     iowrite32(1 << 4, ddata->mbox + 0x1014); /* page 1942-1943 */
 }
@@ -501,24 +505,24 @@ static void *risc1_rproc_da_to_va(struct rproc *rproc, u64 da, int len)
 	void *va = NULL;
 	unsigned int i;
 
-	printk(KERN_INFO "risc1_rproc_da_to_va %d\n", len);
+	//printk(KERN_INFO "risc1_rproc_da_to_va %d\n", len);
 
 	if (len <= 0)
         return NULL;
 
 	ma = risc1_get_paddr(da);
-	printk(KERN_INFO "risc1_rproc_da_to_va 0x%x\n", ma);
+	//printk(KERN_INFO "risc1_rproc_da_to_va 0x%x\n", ma);
 
 	/* Check regions */
 	for (i = 0; i < MAX_RPROC_MEM; i++) {
-		printk(KERN_INFO "risc1_rproc_da_to_va %d 0x%x %ld 0x%016lx\n",
-			i, ddata->mem[i].dev_addr, ddata->mem[i].size, ddata->mem[i].cpu_addr);
+		//printk(KERN_INFO "risc1_rproc_da_to_va %d 0x%x %ld 0x%016lx\n",
+		//	i, ddata->mem[i].dev_addr, ddata->mem[i].size, ddata->mem[i].cpu_addr);
 
 		if ((ma >= ddata->mem[i].dev_addr)
 			&& (ma + len <= ddata->mem[i].dev_addr + ddata->mem[i].size)) {
 				unsigned int offset = ma - ddata->mem[i].dev_addr;
 				va = (__force void *)(ddata->mem[i].cpu_addr + offset);
-                printk(KERN_INFO "risc1_rproc_da_to_va va 0x%016lx offset 0x%x\n", va, offset);
+                printk(KERN_INFO "risc1_rproc_da_to_va va 0x%016p offset 0x%x\n", va, offset);
 				break;
 		}
 	}
@@ -608,16 +612,48 @@ static void risc1_reset(struct risc1_rproc *ddata)
 		} while(value != RISC1_PPOLICY_PP_ON && count-- > 0);
 	}
 
+
 }
+// TODO: remove it after debug
+static int risc1_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	unsigned long size, phys = 0x0;
+	unsigned long baddr = vma->vm_pgoff << PAGE_SHIFT;
+	int retval;
+
+	size = vma->vm_end - vma->vm_start;
+
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+
+	/*printk(KERN_INFO "baddr 0x%lx size 0x%lx\n", baddr, size);*/
+	vma->vm_pgoff = 0;
+	retval = vm_iomap_memory(vma, phys + baddr, size);
+	if (retval) {
+		printk(KERN_INFO "mmap: remap failed with error %d. ", retval);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static const struct file_operations risc1_fops = {
+	.owner = THIS_MODULE,
+	//.open = risc1_open,
+	//.unlocked_ioctl = risc1_ioctl,
+	//.release = risc1_release,
+	.mmap = risc1_mmap,
+};
 
 static int risc1_rproc_probe(struct platform_device *pdev)
 {
     struct device *dev = &pdev->dev;
+    struct device *cdev;
     struct risc1_rproc *ddata;
     struct device_node *np = dev->of_node;
     struct rproc *rproc;
     const char *fw_name = NULL;
-    int ret;
+    int ret, major, minor;
 
     ret = of_property_read_string(dev->of_node, "firmware",
                                       &fw_name);
@@ -656,8 +692,38 @@ static int risc1_rproc_probe(struct platform_device *pdev)
     if (ret)
         goto free_rproc;
 
+    ret = alloc_chrdev_region(&ddata->dev_num, 0, 1, "rrisc1");
+    if (ret < 0) {
+		dev_err(dev, "Failed to allocate chrdev region\n");
+		goto free_rproc;
+	}
+
+    major = MAJOR(ddata->dev_num);
+	minor = MINOR(ddata->dev_num);
+
+    cdev_init(&ddata->cdev, &risc1_fops);
+
+	ret = cdev_add(&ddata->cdev, MKDEV(major, minor), 1);
+	if (ret < 0) {
+		dev_err(dev, "Failed to add RISC1 cdev\n");
+		goto free_rproc;
+	}
+
+    cdev = device_create(elrisc1_class, dev,
+				MKDEV(major, minor),
+				NULL, "rrisc1");
+    if (IS_ERR(cdev)) {
+		/* this way we can be assured cores[i] is deallocated */
+		dev_err(dev, "Failed to create RISC1 device\n");
+		ret = PTR_ERR(cdev);
+		goto err_cdev;
+	}
+	ddata->devc = dev;
+
     return 0;
 
+err_cdev:
+	cdev_del(&ddata->cdev);
 free_rproc:
     if (device_may_wakeup(dev)) {
         device_init_wakeup(dev, false);

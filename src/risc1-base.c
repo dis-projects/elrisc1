@@ -8,7 +8,6 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-//#include <linux/of_reserved_mem.h>
 #include <linux/of_address.h>
 
 #include "risc1-job-instance.h"
