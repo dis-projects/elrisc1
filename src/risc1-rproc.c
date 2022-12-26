@@ -40,11 +40,13 @@ struct risc1_rproc {
     void __iomem *rsc_va;
     void __iomem *mbox;
 	struct clk **clocks;
+    unsigned int *irqs;
+    int nirqs;
     int clock_count;
     dev_t dev_num;
     u32 event;
     u32 fitaddr;
-    int irq;
+    //int irq;
     bool secured_soc;
     bool early_boot;
     int started;
@@ -72,6 +74,44 @@ static inline u32 risc1_get_paddr(u32 addr)
 	return addr & 0x7fffffff;
 }
 
+static void risc1_iommu_irq(struct risc1_rproc *ddata, int i)
+{
+    void __iomem *regs = ddata->mem[0].cpu_addr;
+	uint32_t reg_tmp;
+
+	/* Select TLB */
+	iowrite32((i ^ 1) << 1, regs + (RISC1_VMMU + 0x0c - RISC1_BASE));
+	dev_warn(ddata->dev, "TLB%d\n", i);
+	reg_tmp = ioread32(regs + (RISC1_VMMU + 0x10 - RISC1_BASE)); // TLBXCPT_ADDR
+	dev_warn(ddata->dev, "TLBXCPT_ADDR: 0x%08x\n", reg_tmp);
+	reg_tmp = ioread32(regs + (RISC1_VMMU + 0x14 - RISC1_BASE)); // TLBXCPT_TYPE
+	dev_warn(ddata->dev, "TLBXCPT_TYPE: 0x%x\n", reg_tmp);
+
+	/* Skip transaction */
+	reg_tmp = 1 << (5 + (i & 1));
+	iowrite32(reg_tmp, regs + (RISC1_VMMU + 0x40 + 4 * i - RISC1_BASE)); // TLB_CTRL
+}
+
+static irqreturn_t risc1_irq(int irq, void *priv)
+{
+    struct risc1_rproc *ddata = (struct risc1_rproc *) priv;
+    void __iomem *regs = ddata->mem[0].cpu_addr;
+    uint32_t reg_tmp, ntlbs;
+    int i;
+
+    reg_tmp = ioread32(regs + (RISC1_VMMU + 8 - RISC1_BASE)); // PTW_CFG
+    ntlbs = (reg_tmp >> 11) & 0xf;
+
+    for (i = 0; i < 4; i++) {
+        if (ntlbs & (1 << i))
+        {
+            risc1_iommu_irq(ddata, i);
+        }
+    }
+
+    return IRQ_HANDLED;
+}
+
 static int risc1_rproc_parse_dt(struct platform_device *pdev)
 {
     struct device *dev = &pdev->dev;
@@ -88,11 +128,48 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
         ddata->early_boot = true;
     }
 
+#if 0
     /* irq */
     ddata->irq = platform_get_irq(pdev, 0);
 	if (ddata->irq < 0) {
 		dev_err(&pdev->dev, "Failed to get interrupt\n");
 		return ddata->irq;
+	}
+#endif
+
+    ddata->nirqs = platform_irq_count(pdev);
+	ddata->irqs = devm_kcalloc(&pdev->dev, ddata->nirqs,
+				      sizeof(unsigned int),
+				      GFP_KERNEL | __GFP_ZERO);
+	if (!ddata->irqs) {
+		ret = -ENOMEM;
+		goto err_device;
+	}
+
+	for (i = 0; i < ddata->nirqs; i++) {
+		ddata->irqs[i] = platform_get_irq(pdev, i);
+		if (ddata->irqs[i] < 0) {
+			dev_err(&pdev->dev,
+				"Failed to get interrupt\n");
+			ret = ddata->irqs[i];
+			goto err_irq;
+		}
+        dev_info(ddata->dev, "risc1 irq %d\n", ddata->irqs[i]);
+
+        if (!i)
+            continue;
+
+		ret = devm_request_irq(&pdev->dev, ddata->irqs[i],
+				       risc1_irq, IRQF_SHARED,
+				       "risc1",
+					   ddata);
+
+		if (ret) {
+			dev_err(&pdev->dev,
+				"Failed to get interrupt resource\n");
+			ret = -EINVAL;
+			goto err_irq;
+		}
 	}
 
     ddata->event = 9;
@@ -165,6 +242,9 @@ static int risc1_rproc_parse_dt(struct platform_device *pdev)
             ddata->mem[2].dev_addr, ddata->mem[2].size, ddata->mem[2].cpu_addr);
 
     return 0;
+err_irq:
+err_device:
+    return ret; // TODO
 }
 
 static int risc1_rproc_elf_load_rsc_table(struct rproc *rproc,
@@ -495,7 +575,7 @@ static int risc1_rproc_start(struct rproc *rproc)
     printk(KERN_INFO "risc1_rproc_start\n");
 
     INIT_WORK(&ddata->workqueue, handle_event);
-    ret = request_irq(ddata->irq, risc1_rproc_vring_interrupt, 0,
+    ret = request_irq(ddata->irqs[0], risc1_rproc_vring_interrupt, 0,
                           dev_name(ddata->dev), rproc);
     if (ret) {
         dev_err(ddata->dev, "failed to enable vring interrupt, ret = %d\n",
@@ -519,7 +599,7 @@ static int risc1_rproc_stop(struct rproc *rproc)
     printk(KERN_INFO "risc1_rproc_stop\n");
 
     if (ddata->started) {
-        free_irq(ddata->irq, rproc);
+        free_irq(ddata->irqs[0], rproc);
         flush_work(&ddata->workqueue);
     }
 
@@ -527,7 +607,7 @@ static int risc1_rproc_stop(struct rproc *rproc)
     iowrite32(0x04 , regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
     iowrite32(1, regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_CLEAR - RISC1_BASE));
     iowrite32(0xff, ddata->mem[2].cpu_addr + 0x101c);
-    //risc1_dump(ddata, RISC1_DUMP_ONCD | RISC1_DUMP_NMI | RISC1_DUMP_CP0);
+    risc1_dump(ddata, RISC1_DUMP_ONCD | RISC1_DUMP_NMI | RISC1_DUMP_CP0);
     msleep(stop_timeout_msec);
 
     risc1_reset(ddata);
@@ -662,6 +742,37 @@ static void risc1_reset(struct risc1_rproc *ddata)
 
 
 }
+
+static int risc1_open(struct inode *inode, struct file *file)
+{
+	struct risc1_rproc *ddata;
+	int ret;
+
+	ddata = container_of(inode->i_cdev, struct risc1_rproc, cdev);
+
+	file->private_data = ddata;
+
+	ret = 0;
+
+	return ret < 0 ? ret : 0;
+}
+
+static long risc1_ioctl(struct file *file, unsigned int cmd,
+			       unsigned long arg)
+{
+    struct risc1_rproc *ddata =
+		(struct risc1_rproc *)file->private_data;
+    void __iomem *regs = ddata->mem[0].cpu_addr;
+
+    switch(cmd) {
+    case RISC1_IOC_DUMP:
+        iowrite32(0x04 , regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
+        risc1_dump(ddata, RISC1_DUMP_ONCD);
+        break;
+    }
+    return 0;
+}
+
 // TODO: remove it after debug
 static int risc1_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -687,8 +798,8 @@ static int risc1_mmap(struct file *file, struct vm_area_struct *vma)
 
 static const struct file_operations risc1_fops = {
 	.owner = THIS_MODULE,
-	//.open = risc1_open,
-	//.unlocked_ioctl = risc1_ioctl,
+	.open = risc1_open,
+	.unlocked_ioctl = risc1_ioctl,
 	//.release = risc1_release,
 	.mmap = risc1_mmap,
 };

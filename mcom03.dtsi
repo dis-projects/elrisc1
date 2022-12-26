@@ -38,7 +38,7 @@
 		};
 
 		risc1_reserved: risc1_reserved@e0000000 {
-			reg = <0 0xe0000000 0 0x8000000>;
+			reg = <0 0xe0000000 0 0x19000000>;
 			no-map;
 		};
 	};
@@ -1276,7 +1276,7 @@
 				  <0 0x01e00000 0 0x9000>; /* MBOX */
 			memory-region   = <&risc1_reserved>;
 			interrupt-parent = <&qlic1>;
-			interrupts = <12>;
+			interrupts = <12>, <2>;
 			event = <9>;
 			resets = <&risc1_reset 0>;
 			clocks = <&sdr_ucg0 SDR_INT_CLK>,
