@@ -607,7 +607,7 @@ static int risc1_rproc_stop(struct rproc *rproc)
     iowrite32(0x04 , regs + (RISC1_OnCD + RISC1_ONCD_IR - RISC1_BASE));
     iowrite32(1, regs + (RISC1_URB + SDR_RISC1_SOFT_NMI_CLEAR - RISC1_BASE));
     iowrite32(0xff, ddata->mem[2].cpu_addr + 0x101c);
-    risc1_dump(ddata, RISC1_DUMP_ONCD | RISC1_DUMP_NMI | RISC1_DUMP_CP0);
+    //risc1_dump(ddata, RISC1_DUMP_ONCD | RISC1_DUMP_NMI | RISC1_DUMP_CP0);
     msleep(stop_timeout_msec);
 
     risc1_reset(ddata);
